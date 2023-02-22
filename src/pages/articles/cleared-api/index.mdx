@@ -1,0 +1,160 @@
+import { ArticleLayout } from '@/components/ArticleLayout'
+import githubActions1 from '@/pages/articles/cleared-api/gh_actions_1.png'
+import githubActions2 from '@/pages/articles/cleared-api/gh_actions_2.png'
+
+import Image from "next/image";
+
+export const meta = {
+  author: 'Jigar Patel',
+  date: '2023-02-01',
+  title: 'Cleared, a music-fingerprinting API service',
+  description:
+    'A music fingerprinting API service',
+}
+
+export default (props) => <ArticleLayout meta={meta} {...props} />
+
+## Project Summary
+The [Cleared](https://demo.clearedmusic.io/) API is a project I helped develop for That Pitch, a online
+music licensing & distribution company. That Pitch's works with independent producers to source and analyze tracks for infringements;
+they then sell those to larger online music distributors such as Soundstripe, who go on to license the tracks for use in
+youtube videos or online DSP's such as Apple Music or Spotify.
+
+The intended goal of the API was to allow other online licensing and distribution companies to utilize the fingerprinting
+service. Access to the API is sold via a similar service like [RapidAPI](www.rapidapi.com) called [Blobr](cleared.thatpitch.com)
+
+Blobr allows you to sell access to API's very easily, handling payments, quota management, authentication and so on. It also provides
+the end user a URL so the actual backend service URL is not exposed. All you have to do is provide an openapi.yaml file and instructions on how to utilize the API for the end user. For non-technical
+users who don't know how to utilize an API, Blobr provides a user-interface so the user only has to provide the required
+parameters.
+
+Additionally, the API can be split up into individual *products* which allows you to restrict the product to specific
+query parameters or endpoints. For example, if you want to sell access to an API that analyzes tracks for infringement for usage in
+video games, you can set that product to only use a param like ```https://www.clearedmusic.io?api_type=games_verify```
+
+To handle the actual audio fingerprinting another external API service is used, similar to Shazam. Effectively the Cleared
+API is a whitelabel solution to this underlying service, with a bunch of extra logic added to be used for specific licensing purposes.
+
+## Backend Service Architecture
+Our api service is deployed on Google Cloud Functions. This is a great lightweight solution for an api like this, without
+having to worry about scaling instances or any other SRE related concerns. The functions runtime is Python3.9 on Flask to handle
+the incoming HTTP requests. Using this architecture the api is easily able to handle 1M+ requests a month at its current scale.
+At some point, GCP API Gateway will be used in front of the function to handle load balancing and improved performance at the edge since
+API Gateway allows you to deploy multiple gateways across a number of different regions.
+
+The overall project structure is organized as below with the main entry point into the function within the `main.py` file.
+
+```
+.
+├── gen
+├── lib
+│   ├── __init__.py
+│   ├── common.py
+│   ├── endpoints
+│   │   ├── __init__.py
+│   │   ├── dn.py
+│   │   ├── dt.py
+│   │   ├── ml.py
+│   │   ├── mlsi.py
+│   │   ├── neyt.py
+│   │   └── yt.py
+│   ├── gcloud_loguru.py
+│   ├── major_labels.py
+│   ├── models.py
+│   └── openapi.yaml
+├── load_test.json
+├── main.py
+├── pyproject.toml
+├── requirements.txt
+├── setup.cfg
+└── tests
+    ├── __init__.py
+    ├── conftest.py
+    └── test_api.py
+
+8 directories, 21 files
+
+```
+
+The API has two primary parameters, required by the user: a `api_type` and a `url`. The `api_type` is functionally equivalent
+to a url endpoint. GCP Functions does not allow you to easily bifurcate the request by using Flask app router since the route
+is actually controlled by the function and not your code. To account
+for this I wrote a simple function to route the request to the appropriate function based on the `api_type` provided.
+
+```python
+def route_req(payload):
+    endpoints = {
+        "yt": yt.process_yt,
+        "ml": ml.process_ml,
+        "neyt": neyt.process_neyt,
+        "dn": dn.process_dn,
+        "mlsi": mlsi.process_mlsi,
+        "dt": dt.process_dt,
+    }
+    status, songs = endpoints.get(payload.api_type)(payload.url)
+    return generate_response(status, songs, payload.api_type)
+```
+
+Eventually I would like to implement actual url endpoints by moving to Cloud Run for the backend service and moving to FastAPI for the web framework.
+
+
+
+```json
+{
+	"status": "success",
+	"result": [
+		{
+			"songs": [
+				{
+					"score": 85,
+					"artist": "Richie Rell",
+					"title": "No Mask",
+					"album": "No Feelings",
+					"release_date": "2022-02-14",
+					"timecode": "00:15",
+					"isrc": "QZMEV2124216",
+					"song_link": "https://lis.tn/FnCslL",
+					"start_offset": 1,
+					"end_offset": 9780
+				}
+			]
+		}
+	]
+}
+```
+*Example API response*
+
+The CI/CD pipeline is fairly basic and ran via Github Actions. A docker container is spun up for running tests and
+once all tests are passed, and based on the current branch the function is deployed to GCP.
+<Image src={githubActions1} alt=""/>
+<Image src={githubActions2} alt=""/>
+*Pipeline actions for a testing container*
+
+Currently, the tests mostly consist of integration type tests, to ensure a proper response is received for a given set of
+conditions. These conditions typically include various types of songs and the 6 different "api_types" that are
+available. I utilized Pytest as the testing framework, which has worked really well since it has great
+support for fixtures and retry logic etc.
+
+## Demo Site
+In addition to the backend API, I set up a basic [demo site](https://demo.clearedmusic.io/) where potential customers can upload songs and examine
+what type of response would be received. If a song match is found, the page will display album art and a waveform of where
+a match was found within the particular song. The album art is generally pulled from Spotify or Apple Music via their available
+API's.
+
+The waveform is sort of a hack, as it is generated randomly since it is difficult to exactly pinpoint where in a song
+the match was found with specific detail, as this is not something that is easily available via the underlying fingerprinting API
+we utilize.
+
+I utilized the Svelte framework for the frontend, which was a great choice as it is a bit lighter than React. The page does
+not really need to be a SPA since it is not a full-fledged web app; however, this was a good exercise for me in learning
+how to use Svelte and I would definitely use it again in future projects.
+
+## Future Enhancements
+
+This was a great project to work on, given the scale and interesting problems involved. Some future enhancements I'd like to implement in no particular order:
+1. Move to Cloud Run & FastAPI, currently the actual API is on GCP Functions, while the demo site is on Cloud Run. It would be good to consolidate these
+to make it much easier to update both the API and the demo site as needed.
+2. Utilize GCP API Gateway for additional security & automatic scaling. API Gateway allows multiple region gateways, so performance can be improved
+based on the users location.
+
+
